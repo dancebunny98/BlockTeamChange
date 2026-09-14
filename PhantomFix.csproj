@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>PhantomFix</RootNamespace>
+    <AssemblyName>PhantomFix</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      ВАЖНО: начиная с версии 1.0.374 пакет CounterStrikeSharp.API
+      собирается под net10.0 и НЕСОВМЕСТИМ с net8.0 (см. ошибку
+      NU1202 при restore на "*"). Последняя известная net8.0-версия —
+      1.0.366. Зафиксируйте её здесь явно и сверьте с версией
+      CounterStrikeSharp, реально установленной на вашем сервере —
+      если на сервере уже стоит билд под net10.0, нужно будет вместо
+      этого поднять TargetFramework выше до net10.0.
+    -->
+    <PackageReference Include="CounterStrikeSharp.API" Version="1.0.366" />
+  </ItemGroup>
+
+</Project>

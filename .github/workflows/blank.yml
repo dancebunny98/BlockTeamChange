@@ -1,0 +1,58 @@
+name: Build PhantomFix
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*.*.*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore PhantomFix.csproj
+
+      - name: Build
+        run: dotnet build PhantomFix.csproj -c Release --no-restore
+
+      - name: Package plugin folder
+        run: |
+          set -eu
+          PKG_DIR="dist/PhantomFix"
+          mkdir -p "$PKG_DIR"
+          cp bin/Release/net8.0/PhantomFix.dll "$PKG_DIR/"
+          if [ -f bin/Release/net8.0/PhantomFix.deps.json ]; then
+            cp bin/Release/net8.0/PhantomFix.deps.json "$PKG_DIR/"
+          fi
+          if [ -f bin/Release/net8.0/PhantomFix.pdb ]; then
+            cp bin/Release/net8.0/PhantomFix.pdb "$PKG_DIR/"
+          fi
+          cd dist
+          zip -r PhantomFix.zip PhantomFix
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhantomFix
+          path: dist/PhantomFix.zip
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/PhantomFix.zip
