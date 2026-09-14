@@ -4,8 +4,8 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>PhantomFix</RootNamespace>
-    <AssemblyName>PhantomFix</AssemblyName>
+    <RootNamespace>BlockTeamChange</RootNamespace>
+    <AssemblyName>BlockTeamChange</AssemblyName>
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
