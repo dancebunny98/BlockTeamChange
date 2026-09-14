@@ -9,11 +9,10 @@ namespace PhantomFix;
 public class PhantomFixPlugin : BasePlugin
 {
     public override string ModuleName => "Phantom Fix";
-    public override string ModuleVersion => "1.2.0";
+    public override string ModuleVersion => "1.3.0";
     public override string ModuleAuthor => "Assistant";
-    public override string ModuleDescription => "Kill player on team change and verify they are really dead";
+    public override string ModuleDescription => "Cascade-kill player on team change to prevent phantom state";
 
-    // Храним последнюю известную команду каждого игрока (по слоту)
     private readonly Dictionary<int, CsTeam> _lastTeam = new();
 
     public override void Load(bool hotReload)
@@ -26,7 +25,6 @@ public class PhantomFixPlugin : BasePlugin
     {
         var player = Utilities.GetPlayerFromSlot(playerSlot);
         if (player == null || !player.IsValid) return;
-
         _lastTeam[playerSlot] = player.Team;
     }
 
@@ -39,77 +37,63 @@ public class PhantomFixPlugin : BasePlugin
             var slot = player.Slot;
             var currentTeam = player.Team;
 
-            // Если команда не изменилась — пропускаем
             if (!_lastTeam.TryGetValue(slot, out var lastTeam) || lastTeam == currentTeam)
                 continue;
 
             _lastTeam[slot] = currentTeam;
 
-            // Наблюдателей и "None" не трогаем
+            // Смена команды = смерть. Наблюдателей и "None" не трогаем.
             if (currentTeam == CsTeam.Spectator || currentTeam == CsTeam.None)
                 continue;
 
-            // Небольшая задержка, чтобы движок успел применить смену команды
-            AddTimer(0.1f, () => KillAndVerify(player));
+            // Запускаем каскад убийства с небольшой задержкой
+            AddTimer(0.2f, () => StartKillCascade(player, 0));
         }
     }
 
     /// <summary>
-    /// Убивает игрока и проверяет, что он действительно мёртв (а не "призрак").
-    /// Никакого респавна — игрок остаётся мёртвым.
+    /// Каскадное убийство. Шаг 0: CommitSuicide, Шаг 1: AddEntityIOEvent("Kill"), Шаг 2: ExecuteClientCommand("kill").
     /// </summary>
-    private void KillAndVerify(CCSPlayerController player)
+    private void StartKillCascade(CCSPlayerController player, int step)
     {
         if (!player.IsValid) return;
 
-        // Первое убийство
-        player.CommitSuicide(true, false);
-
-        // Через мгновение проверяем состояние
-        AddTimer(0.2f, () =>
-        {
-            if (!player.IsValid) return;
-
-            if (IsPhantom(player))
-            {
-                Server.PrintToConsole($"[PhantomFix] Phantom detected on '{player.PlayerName}', forcing kill");
-
-                // Повторное принудительное убийство
-                player.CommitSuicide(true, false);
-
-                // Если и это не помогло — шлём консольную команду kill от имени клиента
-                AddTimer(0.2f, () =>
-                {
-                    if (!player.IsValid) return;
-
-                    if (IsPhantom(player))
-                    {
-                        Server.PrintToConsole($"[PhantomFix] Phantom persists on '{player.PlayerName}', sending 'kill' command");
-                        player.ExecuteClientCommand("kill");
-                    }
-                });
-            }
-        });
-    }
-
-    /// <summary>
-    /// Проверка на "призрачное" состояние.
-    /// Возвращает true, если игрок "жив" по контроллеру, но его пешка невалидна
-    /// или не соответствует мёртвому состоянию после убийства.
-    /// </summary>
-    private bool IsPhantom(CCSPlayerController player)
-    {
-        // Если игрок уже мёртв — всё в порядке
+        // Если игрок уже мертв, прекращаем
         if (!player.PawnIsAlive)
-            return false;
+        {
+            Server.PrintToConsole($"[PhantomFix] '{player.PlayerName}' is already dead after step {step}.");
+            return;
+        }
 
-        var pawn = player.PlayerPawn.Value;
+        // Если достигли последнего шага и все еще живы - выходим (значит что-то совсем пошло не так)
+        if (step > 2)
+        {
+            Server.PrintToConsole($"[PhantomFix] CRITICAL: '{player.PlayerName}' is STILL alive after all kill attempts!");
+            return;
+        }
 
-        // Пешка битая/невалидная, а контроллер считает игрока живым — это призрак
-        if (pawn == null || !pawn.IsValid)
-            return true;
+        Server.PrintToConsole($"[PhantomFix] Kill cascade step {step} for '{player.PlayerName}'.");
 
-        // Health > 0 — смерть не применилась
-        return pawn.Health > 0;
+        switch (step)
+        {
+            case 0:
+                player.CommitSuicide(true, false);
+                break;
+            case 1:
+                // Прямая команда сущности на убийство
+                var pawn = player.PlayerPawn.Value;
+                if (pawn != null && pawn.IsValid)
+                {
+                    pawn.AddEntityIOEvent("Kill", pawn, delay: 0.1f);
+                }
+                break;
+            case 2:
+                // Консольная команда от имени игрока (самый жесткий вариант)
+                player.ExecuteClientCommand("kill");
+                break;
+        }
+
+        // Проверяем результат через 0.5 секунды и, если нужно, запускаем следующий шаг
+        AddTimer(0.5f, () => StartKillCascade(player, step + 1));
     }
 }
