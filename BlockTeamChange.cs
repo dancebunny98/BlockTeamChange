@@ -1,6 +1,7 @@
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
+using CounterStrikeSharp.API.Modules.Entities.Constants;
 using CounterStrikeSharp.API.Modules.Utils;
 
 namespace BlockTeamChange;
@@ -8,7 +9,7 @@ namespace BlockTeamChange;
 /// <summary>
 /// 1) Блокирует смену команды/переход в наблюдатели во время freeze time.
 /// 2) Фиксит "фантомную модель": пока клиент не подключился полностью
-///    (Connected != PlayerConnectedState.PlayerConnected), его pawn уже
+///    (Connected != PlayerConnectedState.Connected), его pawn уже
 ///    заспавнен на карте и его можно убить, хотя игрок ещё не загрузился.
 ///    На это время pawn становится неуязвимым и не блокирующим.
 /// </summary>
@@ -82,7 +83,7 @@ public class BlockTeamChangePlugin : BasePlugin
         if (player == null || !player.IsValid || player.IsBot)
             return HookResult.Continue;
 
-        if (player.Connected != PlayerConnectedState.PlayerConnected)
+        if (player.Connected != PlayerConnectedState.Connected)
             ApplyProtection(player);
 
         return HookResult.Continue;
@@ -101,7 +102,7 @@ public class BlockTeamChangePlugin : BasePlugin
             if (pawn == null || !pawn.IsValid)
                 continue;
 
-            bool fullyConnected = player.Connected == PlayerConnectedState.PlayerConnected;
+            bool fullyConnected = player.Connected == PlayerConnectedState.Connected;
 
             if (!fullyConnected && pawn.TakesDamage)
             {
