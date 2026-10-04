@@ -22,7 +22,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Restore
         run: dotnet restore BlockTeamChange.csproj
@@ -35,12 +35,12 @@ jobs:
           set -eu
           PKG_DIR="dist/BlockTeamChange"
           mkdir -p "$PKG_DIR"
-          cp bin/Release/net8.0/BlockTeamChange.dll "$PKG_DIR/"
-          if [ -f bin/Release/net8.0/BlockTeamChange.deps.json ]; then
-            cp bin/Release/net8.0/BlockTeamChange.deps.json "$PKG_DIR/"
+          cp bin/Release/net10.0/BlockTeamChange.dll "$PKG_DIR/"
+          if [ -f bin/Release/net10.0/BlockTeamChange.deps.json ]; then
+            cp bin/Release/net10.0/BlockTeamChange.deps.json "$PKG_DIR/"
           fi
-          if [ -f bin/Release/net8.0/BlockTeamChange.pdb ]; then
-            cp bin/Release/net8.0/BlockTeamChange.pdb "$PKG_DIR/"
+          if [ -f bin/Release/net10.0/BlockTeamChange.pdb ]; then
+            cp bin/Release/net10.0/BlockTeamChange.pdb "$PKG_DIR/"
           fi
           cd dist
           zip -r BlockTeamChange.zip BlockTeamChange
