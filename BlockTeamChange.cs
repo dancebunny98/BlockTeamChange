@@ -22,6 +22,7 @@ public class BlockTeamChangePlugin : BasePlugin
 
     // Флаг, указывающий, идёт ли сейчас период заморозки
     private bool _isFreezePeriod = false;
+    private bool _hasRoundStarted = false;
 
     public override void Load(bool hotReload)
     {
@@ -42,6 +43,7 @@ public class BlockTeamChangePlugin : BasePlugin
 
     private HookResult OnRoundStart(EventRoundStart @event, GameEventInfo info)
     {
+        _hasRoundStarted = true;
         _isFreezePeriod = true;
         return HookResult.Continue;
     }
@@ -56,6 +58,7 @@ public class BlockTeamChangePlugin : BasePlugin
     {
         // На случай, если раунд закончился до окончания заморозки
         _isFreezePeriod = false;
+        _hasRoundStarted = false;
         return HookResult.Continue;
     }
 
@@ -66,7 +69,7 @@ public class BlockTeamChangePlugin : BasePlugin
             return HookResult.Continue;
 
         // Блокируем смену команды только во время периода заморозки
-        if (_isFreezePeriod)
+        if (_hasRoundStarted && _isFreezePeriod)
         {
             player.PrintToChat(" \x04[Сервер] \x01Смена команды доступна только во время раунда.");
             return HookResult.Handled;

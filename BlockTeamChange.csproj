@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>BlockTeamChange</RootNamespace>
@@ -21,7 +21,7 @@
       если на сервере уже стоит билд под net10.0, нужно будет вместо
       этого поднять TargetFramework выше до net10.0.
     -->
-    <PackageReference Include="CounterStrikeSharp.API" Version="1.0.366" />
+    <PackageReference Include="CounterStrikeSharp.API" Version="1.0.374" />
   </ItemGroup>
 
 </Project>
