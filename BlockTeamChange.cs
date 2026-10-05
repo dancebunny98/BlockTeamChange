@@ -16,7 +16,7 @@ namespace BlockTeamChange;
 public class BlockTeamChangePlugin : BasePlugin
 {
     public override string ModuleName => "Block Team Change + Phantom Fix";
-    public override string ModuleVersion => "1.5.0";
+    public override string ModuleVersion => "1.6.0";
     public override string ModuleAuthor => "Assistant";
     public override string ModuleDescription => "Blocks team changes during freeze time and fixes the phantom killable player model on connect";
 
@@ -32,6 +32,7 @@ public class BlockTeamChangePlugin : BasePlugin
         RegisterEventHandler<EventRoundFreezeEnd>(OnRoundFreezeEnd);
         RegisterEventHandler<EventRoundEnd>(OnRoundEnd);
         RegisterEventHandler<EventPlayerTeam>(OnPlayerTeam, HookMode.Post);
+        RegisterListener<Listeners.OnClientConnected>(OnClientConnected);
         RegisterListener<Listeners.OnClientPutInServer>(OnClientPutInServer);
         RegisterListener<Listeners.OnClientDisconnect>(OnClientDisconnect);
 
@@ -39,7 +40,7 @@ public class BlockTeamChangePlugin : BasePlugin
         AddCommandListener("spectate", OnTeamChange, HookMode.Pre);
 
         // --- Фикс фантомной модели ---
-        RegisterEventHandler<EventPlayerSpawn>(OnPlayerSpawn);
+        RegisterEventHandler<EventPlayerSpawn>(OnPlayerSpawn, HookMode.Pre);
         RegisterListener<Listeners.OnTick>(OnTick);
     }
 
@@ -85,12 +86,14 @@ public class BlockTeamChangePlugin : BasePlugin
         return HookResult.Continue;
     }
 
+    private void OnClientConnected(int slot)
+    {
+        MarkWaitingForNextRound(slot);
+    }
+
     private void OnClientPutInServer(int slot)
     {
-        // A reconnect can restore the player's team without emitting a new
-        // player_team event. Mark the slot immediately so the fresh pawn is
-        // not allowed to become alive during the current round.
-        _waitForNextRound.Add(slot);
+        MarkWaitingForNextRound(slot);
 
         Server.NextFrame(() =>
         {
@@ -98,6 +101,13 @@ public class BlockTeamChangePlugin : BasePlugin
             if (player != null)
                 KeepDeadUntilNextRound(player);
         });
+    }
+
+    private void MarkWaitingForNextRound(int slot)
+    {
+        // A reconnect can restore the player's team without emitting a new
+        // player_team event. Mark the slot before the first spawn event.
+        _waitForNextRound.Add(slot);
     }
 
     private void OnClientDisconnect(int slot)
@@ -136,6 +146,14 @@ public class BlockTeamChangePlugin : BasePlugin
         var player = @event.Userid;
         if (player == null || !player.IsValid || player.IsBot)
             return HookResult.Continue;
+
+        if (_waitForNextRound.Contains(player.Slot))
+        {
+            // Do not let CS2 create a live pawn for a player waiting for the
+            // next round. OnTick remains as a fallback for engine respawns.
+            KillIfAlive(player);
+            return HookResult.Handled;
+        }
 
         if (player.Connected != PlayerConnectedState.Connected)
             ApplyProtection(player);
