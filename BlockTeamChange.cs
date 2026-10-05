@@ -16,7 +16,7 @@ namespace BlockTeamChange;
 public class BlockTeamChangePlugin : BasePlugin
 {
     public override string ModuleName => "Block Team Change + Phantom Fix";
-    public override string ModuleVersion => "1.4.0";
+    public override string ModuleVersion => "1.5.0";
     public override string ModuleAuthor => "Assistant";
     public override string ModuleDescription => "Blocks team changes during freeze time and fixes the phantom killable player model on connect";
 
@@ -32,6 +32,8 @@ public class BlockTeamChangePlugin : BasePlugin
         RegisterEventHandler<EventRoundFreezeEnd>(OnRoundFreezeEnd);
         RegisterEventHandler<EventRoundEnd>(OnRoundEnd);
         RegisterEventHandler<EventPlayerTeam>(OnPlayerTeam, HookMode.Post);
+        RegisterListener<Listeners.OnClientPutInServer>(OnClientPutInServer);
+        RegisterListener<Listeners.OnClientDisconnect>(OnClientDisconnect);
 
         AddCommandListener("jointeam", OnTeamChange, HookMode.Pre);
         AddCommandListener("spectate", OnTeamChange, HookMode.Pre);
@@ -81,6 +83,26 @@ public class BlockTeamChangePlugin : BasePlugin
         }
 
         return HookResult.Continue;
+    }
+
+    private void OnClientPutInServer(int slot)
+    {
+        // A reconnect can restore the player's team without emitting a new
+        // player_team event. Mark the slot immediately so the fresh pawn is
+        // not allowed to become alive during the current round.
+        _waitForNextRound.Add(slot);
+
+        Server.NextFrame(() =>
+        {
+            var player = Utilities.GetPlayerFromSlot(slot);
+            if (player != null)
+                KeepDeadUntilNextRound(player);
+        });
+    }
+
+    private void OnClientDisconnect(int slot)
+    {
+        _waitForNextRound.Remove(slot);
     }
 
     private void KeepDeadUntilNextRound(CCSPlayerController player)
