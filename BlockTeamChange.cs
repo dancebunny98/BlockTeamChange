@@ -16,7 +16,7 @@ namespace BlockTeamChange;
 public class BlockTeamChangePlugin : BasePlugin
 {
     public override string ModuleName => "Block Team Change + Phantom Fix";
-    public override string ModuleVersion => "1.6.0";
+    public override string ModuleVersion => "1.7.0";
     public override string ModuleAuthor => "Assistant";
     public override string ModuleDescription => "Blocks team changes during freeze time and fixes the phantom killable player model on connect";
 
@@ -40,7 +40,7 @@ public class BlockTeamChangePlugin : BasePlugin
         AddCommandListener("spectate", OnTeamChange, HookMode.Pre);
 
         // --- Фикс фантомной модели ---
-        RegisterEventHandler<EventPlayerSpawn>(OnPlayerSpawn, HookMode.Pre);
+        RegisterEventHandler<EventPlayerSpawn>(OnPlayerSpawn);
         RegisterListener<Listeners.OnTick>(OnTick);
     }
 
@@ -130,7 +130,8 @@ public class BlockTeamChangePlugin : BasePlugin
             return HookResult.Continue;
 
         // Блокируем смену команды только во время периода заморозки
-        if (_hasRoundStarted && _isFreezePeriod)
+        var isSpectator = player.Team is CsTeam.Spectator or CsTeam.None;
+        if (_hasRoundStarted && _isFreezePeriod && !isSpectator)
         {
             player.PrintToChat(" \x04[Сервер] \x01Смена команды доступна только во время раунда.");
             return HookResult.Handled;
@@ -149,10 +150,10 @@ public class BlockTeamChangePlugin : BasePlugin
 
         if (_waitForNextRound.Contains(player.Slot))
         {
-            // Do not let CS2 create a live pawn for a player waiting for the
-            // next round. OnTick remains as a fallback for engine respawns.
+            // Let CS2 finish creating the pawn, then immediately use the
+            // normal death path so controller and scoreboard stay consistent.
             KillIfAlive(player);
-            return HookResult.Handled;
+            return HookResult.Continue;
         }
 
         if (player.Connected != PlayerConnectedState.Connected)
