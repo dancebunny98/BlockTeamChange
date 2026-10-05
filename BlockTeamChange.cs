@@ -16,13 +16,14 @@ namespace BlockTeamChange;
 public class BlockTeamChangePlugin : BasePlugin
 {
     public override string ModuleName => "Block Team Change + Phantom Fix";
-    public override string ModuleVersion => "1.3.0";
+    public override string ModuleVersion => "1.4.0";
     public override string ModuleAuthor => "Assistant";
     public override string ModuleDescription => "Blocks team changes during freeze time and fixes the phantom killable player model on connect";
 
     // Флаг, указывающий, идёт ли сейчас период заморозки
     private bool _isFreezePeriod = false;
     private bool _hasRoundStarted = false;
+    private readonly HashSet<int> _waitForNextRound = new();
 
     public override void Load(bool hotReload)
     {
@@ -30,6 +31,7 @@ public class BlockTeamChangePlugin : BasePlugin
         RegisterEventHandler<EventRoundStart>(OnRoundStart);
         RegisterEventHandler<EventRoundFreezeEnd>(OnRoundFreezeEnd);
         RegisterEventHandler<EventRoundEnd>(OnRoundEnd);
+        RegisterEventHandler<EventPlayerTeam>(OnPlayerTeam, HookMode.Post);
 
         AddCommandListener("jointeam", OnTeamChange, HookMode.Pre);
         AddCommandListener("spectate", OnTeamChange, HookMode.Pre);
@@ -45,6 +47,7 @@ public class BlockTeamChangePlugin : BasePlugin
     {
         _hasRoundStarted = true;
         _isFreezePeriod = true;
+        _waitForNextRound.Clear();
         return HookResult.Continue;
     }
 
@@ -60,6 +63,32 @@ public class BlockTeamChangePlugin : BasePlugin
         _isFreezePeriod = false;
         _hasRoundStarted = false;
         return HookResult.Continue;
+    }
+
+    private HookResult OnPlayerTeam(EventPlayerTeam @event, GameEventInfo info)
+    {
+        var player = @event.Userid;
+        if (player == null || !player.IsValid || player.IsBot || player.IsHLTV)
+            return HookResult.Continue;
+
+        // A player who joins T/CT from spectator must wait for the next round.
+        // CS2 may create a pawn immediately after player_team, so remember the
+        // slot and enforce the dead state from the next frame and on every tick.
+        if (player.Team is CsTeam.Terrorist or CsTeam.CounterTerrorist)
+        {
+            _waitForNextRound.Add(player.Slot);
+            Server.NextFrame(() => KeepDeadUntilNextRound(player));
+        }
+
+        return HookResult.Continue;
+    }
+
+    private void KeepDeadUntilNextRound(CCSPlayerController player)
+    {
+        if (!player.IsValid || !_waitForNextRound.Contains(player.Slot))
+            return;
+
+        KillIfAlive(player);
     }
 
     private HookResult OnTeamChange(CCSPlayerController? player, CommandInfo commandInfo)
@@ -101,6 +130,12 @@ public class BlockTeamChangePlugin : BasePlugin
             if (player == null || !player.IsValid || player.IsBot)
                 continue;
 
+            if (_waitForNextRound.Contains(player.Slot))
+            {
+                KillIfAlive(player);
+                continue;
+            }
+
             var pawn = player.PlayerPawn.Value;
             if (pawn == null || !pawn.IsValid)
                 continue;
@@ -116,6 +151,12 @@ public class BlockTeamChangePlugin : BasePlugin
                 RemoveProtection(player);
             }
         }
+    }
+
+    private static void KillIfAlive(CCSPlayerController player)
+    {
+        if (player.PawnIsAlive)
+            player.PlayerPawn.Value?.CommitSuicide(false, false);
     }
 
     private void ApplyProtection(CCSPlayerController player)
