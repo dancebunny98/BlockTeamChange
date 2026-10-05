@@ -1,27 +1,27 @@
-# Block Team Change + Phantom Fix
+# BlockTeamChange
 
-Плагин CounterStrikeSharp для CS2 с двумя независимыми функциями:
+CounterStrikeSharp plugin for CS2. The assembly and plugin name remain
+`BlockTeamChange`.
 
-- блокирует `jointeam` и `spectate` во время freeze time;
-- делает только что появившийся pawn неуязвимым и не блокирующим, пока клиент не подключён полностью.
-- после перехода из Spectator в T/CT оставляет игрока мёртвым до начала следующего раунда.
-- после повторного подключения в середине раунда также не даёт автоматически ожить до следующего раунда.
-- переход в Spectator разрешён даже во время freeze time и не блокирует spectator camera.
+## Behaviour
 
-## Требования
+- Team selection is locked during the pre-round countdown and freeze time.
+- Spectator mode remains available while team selection is locked.
+- A player who connects or reconnects to a playable team waits dead until the
+  next round and can spectate living teammates from that team.
+- A spectator who joins T/CT during an active round also waits until the next
+  round.
+- The next round uses the engine's normal spawn path.
+- No per-tick scan or timer is used; work is done only on relevant game and
+  connection events.
 
-- CounterStrikeSharp API `1.0.376`;
-- .NET 10;
-- CS2-сервер с CounterStrikeSharp.
+## Build
 
-## Установка
+Requirements: .NET 10 and CounterStrikeSharp.API 1.0.376.
 
-Скачайте DLL из GitHub Actions или выполните `dotnet build BlockTeamChange.csproj -c Release`. Скопируйте `bin/Release/net10.0/BlockTeamChange.dll` в `addons/counterstrikesharp/plugins/BlockTeamChange/` и перезапустите плагин.
+```powershell
+dotnet build BlockTeamChange.csproj -c Release
+```
 
-Конфигурация и команды не требуются. В начале раунда смена команды снова разрешается после окончания freeze time.
-
-Переход в T/CT во время текущего раунда не даёт немедленный respawn: после штатного создания pawn плагин сразу применяет обычную смерть, чтобы состояние игрока и scoreboard оставались корректными. На следующем `round_start` ограничение снимается и стандартный spawn выполняется игрой.
-
-## Сборка и проверки
-
-Обычная сборка выполняется workflow `build`. Workflow `dependency-audit` еженедельно проверяет уязвимости NuGet и публикует отчёт об устаревших пакетах.
+Copy `bin/Release/net10.0/BlockTeamChange.dll` to the CounterStrikeSharp
+plugins directory.

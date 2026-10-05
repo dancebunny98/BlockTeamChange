@@ -1,233 +1,155 @@
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
-using CounterStrikeSharp.API.Modules.Entities.Constants;
 using CounterStrikeSharp.API.Modules.Utils;
 
 namespace BlockTeamChange;
 
 /// <summary>
-/// 1) Блокирует смену команды/переход в наблюдатели во время freeze time.
-/// 2) Фиксит "фантомную модель": пока клиент не подключился полностью
-///    (Connected != PlayerConnectedState.Connected), его pawn уже
-///    заспавнен на карте и его можно убить, хотя игрок ещё не загрузился.
-///    На это время pawn становится неуязвимым и не блокирующим.
+/// Keeps team selection closed during the pre-round countdown and prevents a
+/// player who joins a team after the round has started from getting an extra
+/// life. Waiting players are released by the next round's normal spawn.
 /// </summary>
-public class BlockTeamChangePlugin : BasePlugin
+public sealed class BlockTeamChangePlugin : BasePlugin
 {
-    public override string ModuleName => "Block Team Change + Phantom Fix";
-    public override string ModuleVersion => "1.8.0";
+    public override string ModuleName => "BlockTeamChange";
+    public override string ModuleVersion => "2.0.0";
     public override string ModuleAuthor => "Assistant";
-    public override string ModuleDescription => "Blocks team changes during freeze time and fixes the phantom killable player model on connect";
+    public override string ModuleDescription => "Controls team selection and delayed round spawns";
 
-    // Флаг, указывающий, идёт ли сейчас период заморозки
-    private bool _isFreezePeriod = false;
-    private bool _hasRoundStarted = false;
-    private readonly HashSet<int> _waitForNextRound = new();
+    private readonly HashSet<int> _waitingForRound = new();
+    private bool _teamSelectionLocked = true;
+    private bool _roundPlayable;
 
     public override void Load(bool hotReload)
     {
-        // --- Блокировка смены команды во время заморозки ---
         RegisterEventHandler<EventRoundStart>(OnRoundStart);
         RegisterEventHandler<EventRoundFreezeEnd>(OnRoundFreezeEnd);
         RegisterEventHandler<EventRoundEnd>(OnRoundEnd);
         RegisterEventHandler<EventPlayerTeam>(OnPlayerTeam, HookMode.Post);
+        RegisterEventHandler<EventPlayerSpawn>(OnPlayerSpawn, HookMode.Post);
         RegisterListener<Listeners.OnClientConnected>(OnClientConnected);
         RegisterListener<Listeners.OnClientPutInServer>(OnClientPutInServer);
         RegisterListener<Listeners.OnClientDisconnect>(OnClientDisconnect);
+        AddCommandListener("jointeam", OnJoinTeam, HookMode.Pre);
+        AddCommandListener("spectate", OnSpectate, HookMode.Pre);
 
-        AddCommandListener("jointeam", OnTeamChange, HookMode.Pre);
-        AddCommandListener("spectate", OnTeamChange, HookMode.Pre);
-
-        // --- Фикс фантомной модели ---
-        RegisterEventHandler<EventPlayerSpawn>(OnPlayerSpawn);
-        RegisterListener<Listeners.OnTick>(OnTick);
+        if (hotReload)
+            Server.NextFrame(MarkConnectedPlayersWaiting);
     }
 
-    // ===================== Блокировка смены команды =====================
-
-    private HookResult OnRoundStart(EventRoundStart @event, GameEventInfo info)
+    private HookResult OnRoundStart(EventRoundStart _, GameEventInfo __)
     {
-        _hasRoundStarted = true;
-        _isFreezePeriod = true;
-        _waitForNextRound.Clear();
+        _waitingForRound.Clear();
+        _teamSelectionLocked = true;
+        _roundPlayable = false;
         return HookResult.Continue;
     }
 
-    private HookResult OnRoundFreezeEnd(EventRoundFreezeEnd @event, GameEventInfo info)
+    private HookResult OnRoundFreezeEnd(EventRoundFreezeEnd _, GameEventInfo __)
     {
-        _isFreezePeriod = false;
+        _teamSelectionLocked = false;
+        _roundPlayable = true;
         return HookResult.Continue;
     }
 
-    private HookResult OnRoundEnd(EventRoundEnd @event, GameEventInfo info)
+    private HookResult OnRoundEnd(EventRoundEnd _, GameEventInfo __)
     {
-        // На случай, если раунд закончился до окончания заморозки
-        _isFreezePeriod = false;
-        _hasRoundStarted = false;
+        _teamSelectionLocked = true;
+        _roundPlayable = false;
         return HookResult.Continue;
     }
 
-    private HookResult OnPlayerTeam(EventPlayerTeam @event, GameEventInfo info)
+    private HookResult OnJoinTeam(CCSPlayerController? player, CommandInfo command)
     {
-        var player = @event.Userid;
-        if (player == null || !player.IsValid || player.IsBot || player.IsHLTV)
+        if (!IsHuman(player))
             return HookResult.Continue;
 
-        // A player who joins T/CT from spectator must wait for the next round.
-        // CS2 may create a pawn immediately after player_team, so remember the
-        // slot and enforce the dead state from the next frame and on every tick.
-        if (player.Team is CsTeam.Terrorist or CsTeam.CounterTerrorist)
+        var requested = command.ArgCount > 1 ? command.GetArg(1) : string.Empty;
+        var spectatorRequest = requested is "1" or "spec" or "spectator";
+
+        if (_teamSelectionLocked && !spectatorRequest)
         {
-            _waitForNextRound.Add(player.Slot);
-            Server.NextFrame(() => KeepDeadUntilNextRound(player));
-        }
-        else
-        {
-            // Spectators must keep their camera and free movement.
-            _waitForNextRound.Remove(player.Slot);
-        }
-
-        return HookResult.Continue;
-    }
-
-    private void OnClientConnected(int slot)
-    {
-        MarkWaitingForNextRound(slot);
-    }
-
-    private void OnClientPutInServer(int slot)
-    {
-        MarkWaitingForNextRound(slot);
-
-        Server.NextFrame(() =>
-        {
-            var player = Utilities.GetPlayerFromSlot(slot);
-            if (player != null)
-                KeepDeadUntilNextRound(player);
-        });
-    }
-
-    private void MarkWaitingForNextRound(int slot)
-    {
-        // A reconnect can restore the player's team without emitting a new
-        // player_team event. Mark the slot before the first spawn event.
-        _waitForNextRound.Add(slot);
-    }
-
-    private void OnClientDisconnect(int slot)
-    {
-        _waitForNextRound.Remove(slot);
-    }
-
-    private void KeepDeadUntilNextRound(CCSPlayerController player)
-    {
-        if (!player.IsValid || !_waitForNextRound.Contains(player.Slot))
-            return;
-
-        KillIfAlive(player);
-    }
-
-    private HookResult OnTeamChange(CCSPlayerController? player, CommandInfo commandInfo)
-    {
-        // Игнорируем ботов, HLTV и невалидных игроков
-        if (player == null || !player.IsValid || player.IsBot || player.IsHLTV)
-            return HookResult.Continue;
-
-        // Блокируем смену команды только во время периода заморозки
-        var isSpectator = player.Team is CsTeam.Spectator or CsTeam.None;
-        var isSpectateCommand = string.Equals(commandInfo.GetArg(0), "spectate", StringComparison.OrdinalIgnoreCase);
-        if (_hasRoundStarted && _isFreezePeriod && !isSpectator && !isSpectateCommand)
-        {
-            player.PrintToChat(" \x04[Сервер] \x01Смена команды доступна только во время раунда.");
+            player!.PrintToChat(" \x04[Сервер] \x01Выбор команды доступен после начала раунда.");
             return HookResult.Handled;
         }
 
-        // Mark the transition before the engine changes the team. This closes
-        // the frame in which CS2 could otherwise spawn the player alive.
-        _waitForNextRound.Add(player.Slot);
-        KillIfAlive(player);
+        if (_roundPlayable && !spectatorRequest)
+            WaitForNextRound(player!);
 
         return HookResult.Continue;
     }
 
-    // ===================== Фикс фантомной модели =====================
+    private HookResult OnSpectate(CCSPlayerController? player, CommandInfo _)
+    {
+        if (!IsHuman(player))
+            return HookResult.Continue;
 
-    private HookResult OnPlayerSpawn(EventPlayerSpawn @event, GameEventInfo info)
+        if (_roundPlayable)
+            _waitingForRound.Remove(player!.Slot);
+
+        return HookResult.Continue;
+    }
+
+    private HookResult OnPlayerTeam(EventPlayerTeam @event, GameEventInfo _)
     {
         var player = @event.Userid;
-        if (player == null || !player.IsValid || player.IsBot)
+        if (!IsHuman(player))
             return HookResult.Continue;
 
-        if (_waitForNextRound.Contains(player.Slot))
-        {
-            // Let CS2 finish creating the pawn, then immediately use the
-            // normal death path so controller and scoreboard stay consistent.
-            KillIfAlive(player);
-            return HookResult.Continue;
-        }
-
-        if (player.Connected != PlayerConnectedState.Connected)
-            ApplyProtection(player);
+        if (_roundPlayable && player!.Team is CsTeam.Terrorist or CsTeam.CounterTerrorist)
+            WaitForNextRound(player);
 
         return HookResult.Continue;
     }
 
-    // Каждый тик проверяем всех игроков: как только состояние подключения
-    // меняется, включаем или снимаем защиту.
-    private void OnTick()
+    private HookResult OnPlayerSpawn(EventPlayerSpawn @event, GameEventInfo _)
+    {
+        var player = @event.Userid;
+        if (!IsHuman(player) || !_waitingForRound.Contains(player!.Slot))
+            return HookResult.Continue;
+
+        Server.NextFrame(() => KillWaitingPlayer(player.Slot));
+        return HookResult.Continue;
+    }
+
+    private void OnClientConnected(int slot) => _waitingForRound.Add(slot);
+
+    private void OnClientPutInServer(int slot)
+    {
+        _waitingForRound.Add(slot);
+        Server.NextFrame(() => KillWaitingPlayer(slot));
+    }
+
+    private void OnClientDisconnect(int slot) => _waitingForRound.Remove(slot);
+
+    private void MarkConnectedPlayersWaiting()
     {
         foreach (var player in Utilities.GetPlayers())
         {
-            if (player == null || !player.IsValid || player.IsBot)
-                continue;
-
-            if (_waitForNextRound.Contains(player.Slot))
-            {
-                KillIfAlive(player);
-                continue;
-            }
-
-            var pawn = player.PlayerPawn.Value;
-            if (pawn == null || !pawn.IsValid)
-                continue;
-
-            bool fullyConnected = player.Connected == PlayerConnectedState.Connected;
-
-            if (!fullyConnected && pawn.TakesDamage)
-            {
-                ApplyProtection(player);
-            }
-            else if (fullyConnected && !pawn.TakesDamage)
-            {
-                RemoveProtection(player);
-            }
+            if (IsHuman(player))
+                _waitingForRound.Add(player.Slot);
         }
     }
 
-    private static void KillIfAlive(CCSPlayerController player)
+    private void WaitForNextRound(CCSPlayerController player)
     {
-        if (player.PawnIsAlive)
-            player.PlayerPawn.Value?.CommitSuicide(false, false);
+        _waitingForRound.Add(player.Slot);
+        Server.NextFrame(() => KillWaitingPlayer(player.Slot));
     }
 
-    private void ApplyProtection(CCSPlayerController player)
+    private void KillWaitingPlayer(int slot)
     {
-        var pawn = player.PlayerPawn.Value;
-        if (pawn == null || !pawn.IsValid) return;
+        if (!_waitingForRound.Contains(slot))
+            return;
 
-        pawn.TakesDamage = false;
-        pawn.Collision.CollisionGroup = (byte)CollisionGroup.COLLISION_GROUP_DEBRIS;
-        Utilities.SetStateChanged(pawn, "CBaseEntity", "m_CollisionGroup");
+        var player = Utilities.GetPlayerFromSlot(slot);
+        if (!IsHuman(player) || !player!.PawnIsAlive)
+            return;
+
+        player.PlayerPawn.Value?.CommitSuicide(false, false);
     }
 
-    private void RemoveProtection(CCSPlayerController player)
-    {
-        var pawn = player.PlayerPawn.Value;
-        if (pawn == null || !pawn.IsValid) return;
-
-        pawn.TakesDamage = true;
-        pawn.Collision.CollisionGroup = (byte)CollisionGroup.COLLISION_GROUP_PLAYER;
-        Utilities.SetStateChanged(pawn, "CBaseEntity", "m_CollisionGroup");
-    }
+    private static bool IsHuman(CCSPlayerController? player) =>
+        player is { IsValid: true, IsBot: false, IsHLTV: false };
 }
