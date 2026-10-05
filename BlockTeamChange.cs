@@ -16,7 +16,7 @@ namespace BlockTeamChange;
 public class BlockTeamChangePlugin : BasePlugin
 {
     public override string ModuleName => "Block Team Change + Phantom Fix";
-    public override string ModuleVersion => "1.7.0";
+    public override string ModuleVersion => "1.8.0";
     public override string ModuleAuthor => "Assistant";
     public override string ModuleDescription => "Blocks team changes during freeze time and fixes the phantom killable player model on connect";
 
@@ -82,6 +82,11 @@ public class BlockTeamChangePlugin : BasePlugin
             _waitForNextRound.Add(player.Slot);
             Server.NextFrame(() => KeepDeadUntilNextRound(player));
         }
+        else
+        {
+            // Spectators must keep their camera and free movement.
+            _waitForNextRound.Remove(player.Slot);
+        }
 
         return HookResult.Continue;
     }
@@ -131,11 +136,17 @@ public class BlockTeamChangePlugin : BasePlugin
 
         // Блокируем смену команды только во время периода заморозки
         var isSpectator = player.Team is CsTeam.Spectator or CsTeam.None;
-        if (_hasRoundStarted && _isFreezePeriod && !isSpectator)
+        var isSpectateCommand = string.Equals(commandInfo.GetArg(0), "spectate", StringComparison.OrdinalIgnoreCase);
+        if (_hasRoundStarted && _isFreezePeriod && !isSpectator && !isSpectateCommand)
         {
             player.PrintToChat(" \x04[Сервер] \x01Смена команды доступна только во время раунда.");
             return HookResult.Handled;
         }
+
+        // Mark the transition before the engine changes the team. This closes
+        // the frame in which CS2 could otherwise spawn the player alive.
+        _waitForNextRound.Add(player.Slot);
+        KillIfAlive(player);
 
         return HookResult.Continue;
     }
