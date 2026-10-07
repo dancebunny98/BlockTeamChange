@@ -36,6 +36,8 @@ jobs:
           PKG_DIR="dist/BlockTeamChange"
           mkdir -p "$PKG_DIR"
           cp bin/Release/net10.0/BlockTeamChange.dll "$PKG_DIR/"
+          cp README.md "$PKG_DIR/"
+          cp -r lang "$PKG_DIR/"
           if [ -f bin/Release/net10.0/BlockTeamChange.deps.json ]; then
             cp bin/Release/net10.0/BlockTeamChange.deps.json "$PKG_DIR/"
           fi

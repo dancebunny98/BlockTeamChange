@@ -1,155 +1,172 @@
+using System.Text.Json;
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
-using CounterStrikeSharp.API.Modules.Utils;
+using CounterStrikeSharp.API.Modules.Cvars;
+using Microsoft.Extensions.Logging;
 
 namespace BlockTeamChange;
 
-/// <summary>
-/// Keeps team selection closed during the pre-round countdown and prevents a
-/// player who joins a team after the round has started from getting an extra
-/// life. Waiting players are released by the next round's normal spawn.
-/// </summary>
-public sealed class BlockTeamChangePlugin : BasePlugin
+public sealed class BlockTeamChangeConfig : IBasePluginConfig
+{
+    public int Version { get; set; } = 1;
+    public string Language { get; set; } = "ru";
+    public bool LockDuringFreezeTime { get; set; } = true;
+    public bool LockAfterRoundEnd { get; set; } = true;
+    public bool PreventLateJoinSpawn { get; set; } = true;
+}
+
+public sealed class BlockTeamChangePlugin : BasePlugin, IPluginConfig<BlockTeamChangeConfig>
 {
     public override string ModuleName => "BlockTeamChange";
-    public override string ModuleVersion => "2.0.0";
+    public override string ModuleVersion => "2.1.0";
     public override string ModuleAuthor => "Assistant";
-    public override string ModuleDescription => "Controls team selection and delayed round spawns";
+    public override string ModuleDescription => "Controls team selection and late-join spawns";
 
-    private readonly HashSet<int> _waitingForRound = new();
-    private bool _teamSelectionLocked = true;
-    private bool _roundPlayable;
+    public BlockTeamChangeConfig Config { get; set; } = new();
+
+    private Dictionary<string, string> _translations = new();
+    private ConVar? _joinGraceTime;
+    private float? _originalJoinGraceTime;
+    private bool _freezeTime;
+    private bool _roundEnded;
+    private bool _liveRoundStarted;
+
+    public void OnConfigParsed(BlockTeamChangeConfig config) => Config = config;
 
     public override void Load(bool hotReload)
     {
+        LoadTranslations();
+        RegisterListener<Listeners.OnMapStart>(OnMapStart);
         RegisterEventHandler<EventRoundStart>(OnRoundStart);
         RegisterEventHandler<EventRoundFreezeEnd>(OnRoundFreezeEnd);
         RegisterEventHandler<EventRoundEnd>(OnRoundEnd);
-        RegisterEventHandler<EventPlayerTeam>(OnPlayerTeam, HookMode.Post);
-        RegisterEventHandler<EventPlayerSpawn>(OnPlayerSpawn, HookMode.Post);
-        RegisterListener<Listeners.OnClientConnected>(OnClientConnected);
-        RegisterListener<Listeners.OnClientPutInServer>(OnClientPutInServer);
-        RegisterListener<Listeners.OnClientDisconnect>(OnClientDisconnect);
         AddCommandListener("jointeam", OnJoinTeam, HookMode.Pre);
         AddCommandListener("spectate", OnSpectate, HookMode.Pre);
 
         if (hotReload)
-            Server.NextFrame(MarkConnectedPlayersWaiting);
+            Server.NextFrame(RestoreRoundState);
+
+        if (Config.PreventLateJoinSpawn)
+        {
+            // The game enforces this before it creates a late joiner's pawn.
+            _joinGraceTime = ConVar.Find("mp_join_grace_time");
+            if (_joinGraceTime != null)
+            {
+                _originalJoinGraceTime = _joinGraceTime.GetPrimitiveValue<float>();
+                EnsureJoinGraceDisabled();
+            }
+            else
+            {
+                Logger.LogWarning("mp_join_grace_time was unavailable; late-join spawning cannot be controlled.");
+            }
+        }
     }
+
+    public override void Unload(bool hotReload)
+    {
+        if (_joinGraceTime != null && _originalJoinGraceTime.HasValue &&
+            _joinGraceTime.GetPrimitiveValue<float>() == 0.0f)
+            _joinGraceTime.SetValue(_originalJoinGraceTime.Value);
+    }
+
+    private void OnMapStart(string _) => ResetRoundState();
 
     private HookResult OnRoundStart(EventRoundStart _, GameEventInfo __)
     {
-        _waitingForRound.Clear();
-        _teamSelectionLocked = true;
-        _roundPlayable = false;
+        EnsureJoinGraceDisabled();
+        _roundEnded = false;
+        _liveRoundStarted = !IsWarmup();
+        _freezeTime = _liveRoundStarted;
         return HookResult.Continue;
     }
 
     private HookResult OnRoundFreezeEnd(EventRoundFreezeEnd _, GameEventInfo __)
     {
-        _teamSelectionLocked = false;
-        _roundPlayable = true;
+        _freezeTime = false;
         return HookResult.Continue;
     }
 
     private HookResult OnRoundEnd(EventRoundEnd _, GameEventInfo __)
     {
-        _teamSelectionLocked = true;
-        _roundPlayable = false;
+        if (_liveRoundStarted && !IsWarmup())
+            _roundEnded = true;
+        _freezeTime = false;
         return HookResult.Continue;
     }
 
-    private HookResult OnJoinTeam(CCSPlayerController? player, CommandInfo command)
+    private HookResult OnJoinTeam(CCSPlayerController? player, CommandInfo _)
     {
-        if (!IsHuman(player))
+        if (!IsHuman(player) || IsWarmup())
             return HookResult.Continue;
 
-        var requested = command.ArgCount > 1 ? command.GetArg(1) : string.Empty;
-        var spectatorRequest = requested is "1" or "spec" or "spectator";
-
-        if (_teamSelectionLocked && !spectatorRequest)
+        if (Config.LockAfterRoundEnd && _roundEnded)
         {
-            player!.PrintToChat(" \x04[Сервер] \x01Выбор команды доступен после начала раунда.");
+            player!.PrintToChat(Translate("round_ended"));
             return HookResult.Handled;
         }
 
-        if (_roundPlayable && !spectatorRequest)
-            WaitForNextRound(player!);
+        if (Config.LockDuringFreezeTime && _freezeTime)
+        {
+            player!.PrintToChat(Translate("freeze_time"));
+            return HookResult.Handled;
+        }
 
         return HookResult.Continue;
     }
 
     private HookResult OnSpectate(CCSPlayerController? player, CommandInfo _)
     {
-        if (!IsHuman(player))
+        if (!IsHuman(player) || IsWarmup() || !Config.LockAfterRoundEnd || !_roundEnded)
             return HookResult.Continue;
 
-        if (_roundPlayable)
-            _waitingForRound.Remove(player!.Slot);
-
-        return HookResult.Continue;
+        player!.PrintToChat(Translate("round_ended"));
+        return HookResult.Handled;
     }
 
-    private HookResult OnPlayerTeam(EventPlayerTeam @event, GameEventInfo _)
+    private void ResetRoundState()
     {
-        var player = @event.Userid;
-        if (!IsHuman(player))
-            return HookResult.Continue;
-
-        if (_roundPlayable && player!.Team is CsTeam.Terrorist or CsTeam.CounterTerrorist)
-            WaitForNextRound(player);
-
-        return HookResult.Continue;
+        _roundEnded = false;
+        _freezeTime = false;
+        _liveRoundStarted = false;
     }
 
-    private HookResult OnPlayerSpawn(EventPlayerSpawn @event, GameEventInfo _)
+    private void EnsureJoinGraceDisabled()
     {
-        var player = @event.Userid;
-        if (!IsHuman(player) || !_waitingForRound.Contains(player!.Slot))
-            return HookResult.Continue;
-
-        Server.NextFrame(() => KillWaitingPlayer(player.Slot));
-        return HookResult.Continue;
+        if (Config.PreventLateJoinSpawn && _joinGraceTime != null &&
+            _joinGraceTime.GetPrimitiveValue<float>() != 0.0f)
+            _joinGraceTime.SetValue(0.0f);
     }
 
-    private void OnClientConnected(int slot) => _waitingForRound.Add(slot);
-
-    private void OnClientPutInServer(int slot)
+    private void RestoreRoundState()
     {
-        _waitingForRound.Add(slot);
-        Server.NextFrame(() => KillWaitingPlayer(slot));
+        var rules = GetGameRules();
+        if (rules is null || rules.WarmupPeriod) return;
+        _liveRoundStarted = rules.RoundStartCount > 0;
+        _roundEnded = _liveRoundStarted && rules.RoundWinStatus != 0;
     }
 
-    private void OnClientDisconnect(int slot) => _waitingForRound.Remove(slot);
-
-    private void MarkConnectedPlayersWaiting()
+    private static bool IsWarmup()
     {
-        foreach (var player in Utilities.GetPlayers())
-        {
-            if (IsHuman(player))
-                _waitingForRound.Add(player.Slot);
-        }
+        return GetGameRules()?.WarmupPeriod ?? false;
     }
 
-    private void WaitForNextRound(CCSPlayerController player)
-    {
-        _waitingForRound.Add(player.Slot);
-        Server.NextFrame(() => KillWaitingPlayer(player.Slot));
-    }
-
-    private void KillWaitingPlayer(int slot)
-    {
-        if (!_waitingForRound.Contains(slot))
-            return;
-
-        var player = Utilities.GetPlayerFromSlot(slot);
-        if (!IsHuman(player) || !player!.PawnIsAlive)
-            return;
-
-        player.PlayerPawn.Value?.CommitSuicide(false, false);
-    }
+    private static CCSGameRules? GetGameRules() =>
+        Utilities.FindAllEntitiesByDesignerName<CCSGameRulesProxy>("cs_gamerules")
+            .FirstOrDefault()?.GameRules;
 
     private static bool IsHuman(CCSPlayerController? player) =>
         player is { IsValid: true, IsBot: false, IsHLTV: false };
+
+    private string Translate(string key) => _translations.GetValueOrDefault(key, key);
+
+    private void LoadTranslations()
+    {
+        var language = Config.Language.Equals("ru", StringComparison.OrdinalIgnoreCase) ? "ru" : "en";
+        var path = Path.Combine(ModuleDirectory, "lang", $"{language}.json");
+        if (!File.Exists(path))
+            path = Path.Combine(ModuleDirectory, "lang", "en.json");
+        if (File.Exists(path))
+            _translations = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(path)) ?? new();
+    }
 }
