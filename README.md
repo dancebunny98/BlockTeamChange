@@ -13,6 +13,11 @@ Team selection is locked during freeze time and between `round_end` and the next
 `round_start`. The latter lock also covers `spectate` and spectator selection.
 Warmup is exempt from both locks. Map changes reset the lock state.
 
+Players who do not choose a team within `TeamSelectionTimeSeconds` are moved to
+spectators. The plugin sets `mp_force_pick_time` to 86400 while loaded so the
+game does not assign them to CT or T first. It restores the previous value on
+unload when the convar still has the plugin's value.
+
 ## Configuration
 
 CounterStrikeSharp creates `configs/plugins/BlockTeamChange/BlockTeamChange.json`.
@@ -23,6 +28,8 @@ CounterStrikeSharp creates `configs/plugins/BlockTeamChange/BlockTeamChange.json
 | `LockDuringFreezeTime` | `true` | Blocks team selection during freeze time. |
 | `LockAfterRoundEnd` | `true` | Blocks all team changes after `round_end`. |
 | `PreventLateJoinSpawn` | `true` | Sets `mp_join_grace_time` to zero. |
+| `SpectateUnpickedPlayers` | `true` | Moves players who do not choose a team to spectators. |
+| `TeamSelectionTimeSeconds` | `15` | Seconds allowed to choose a team; minimum effective value is 1. |
 
 The convar is shared with the server and other plugins. A server config that
 changes it after this plugin loads can override the late-join behavior.

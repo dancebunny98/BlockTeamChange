@@ -16,6 +16,7 @@ public sealed class BlockTeamChangeConfig : IBasePluginConfig
     public bool LockAfterRoundEnd { get; set; } = true;
     public bool PreventLateJoinSpawn { get; set; } = true;
     public bool SpectateUnpickedPlayers { get; set; } = true;
+    public int TeamSelectionTimeSeconds { get; set; } = 15;
 }
 
 public sealed class BlockTeamChangePlugin : BasePlugin, IPluginConfig<BlockTeamChangeConfig>
@@ -101,18 +102,22 @@ public sealed class BlockTeamChangePlugin : BasePlugin, IPluginConfig<BlockTeamC
 
     private void OnClientPutInServer(int slot)
     {
-        if (!Config.SpectateUnpickedPlayers || !_originalForcePickTime.HasValue)
+        if (!Config.SpectateUnpickedPlayers || _forcePickTime is null)
             return;
 
+        EnsureAutoPickDisabled();
         var player = Utilities.GetPlayers().FirstOrDefault(p => p.Slot == slot);
         if (!IsHuman(player))
             return;
 
-        var selectionTime = _originalForcePickTime.Value > 0 ? _originalForcePickTime.Value : 15.0f;
+        var selectionTime = Math.Max(1, Config.TeamSelectionTimeSeconds);
         AddTimer(selectionTime, () =>
         {
             if (IsHuman(player) && player!.TeamNum == 0)
-                player.ChangeTeam(CsTeam.Spectator);
+            {
+                player.SwitchTeam(CsTeam.Spectator);
+                player.PrintToChat(Translate("team_selection_expired"));
+            }
         });
     }
 

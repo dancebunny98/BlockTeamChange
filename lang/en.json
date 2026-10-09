@@ -1,4 +1,5 @@
 {
   "round_ended": " \u0004[Server] \u0001Team changes are available next round.",
-  "freeze_time": " \u0004[Server] \u0001Team changes are available after freeze time."
+  "freeze_time": " \u0004[Server] \u0001Team changes are available after freeze time.",
+  "team_selection_expired": " \u0004[Server] \u0001Team selection time expired. You are now a spectator."
 }
