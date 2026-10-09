@@ -3,6 +3,7 @@ using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Cvars;
+using CounterStrikeSharp.API.Modules.Utils;
 using Microsoft.Extensions.Logging;
 
 namespace BlockTeamChange;
@@ -14,12 +15,13 @@ public sealed class BlockTeamChangeConfig : IBasePluginConfig
     public bool LockDuringFreezeTime { get; set; } = true;
     public bool LockAfterRoundEnd { get; set; } = true;
     public bool PreventLateJoinSpawn { get; set; } = true;
+    public bool SpectateUnpickedPlayers { get; set; } = true;
 }
 
 public sealed class BlockTeamChangePlugin : BasePlugin, IPluginConfig<BlockTeamChangeConfig>
 {
     public override string ModuleName => "BlockTeamChange";
-    public override string ModuleVersion => "2.1.0";
+    public override string ModuleVersion => "2.2.0";
     public override string ModuleAuthor => "Assistant";
     public override string ModuleDescription => "Controls team selection and late-join spawns";
 
@@ -28,6 +30,8 @@ public sealed class BlockTeamChangePlugin : BasePlugin, IPluginConfig<BlockTeamC
     private Dictionary<string, string> _translations = new();
     private ConVar? _joinGraceTime;
     private float? _originalJoinGraceTime;
+    private ConVar? _forcePickTime;
+    private float? _originalForcePickTime;
     private bool _freezeTime;
     private bool _roundEnded;
     private bool _liveRoundStarted;
@@ -38,6 +42,7 @@ public sealed class BlockTeamChangePlugin : BasePlugin, IPluginConfig<BlockTeamC
     {
         LoadTranslations();
         RegisterListener<Listeners.OnMapStart>(OnMapStart);
+        RegisterListener<Listeners.OnClientPutInServer>(OnClientPutInServer);
         RegisterEventHandler<EventRoundStart>(OnRoundStart);
         RegisterEventHandler<EventRoundFreezeEnd>(OnRoundFreezeEnd);
         RegisterEventHandler<EventRoundEnd>(OnRoundEnd);
@@ -61,6 +66,20 @@ public sealed class BlockTeamChangePlugin : BasePlugin, IPluginConfig<BlockTeamC
                 Logger.LogWarning("mp_join_grace_time was unavailable; late-join spawning cannot be controlled.");
             }
         }
+
+        if (Config.SpectateUnpickedPlayers)
+        {
+            _forcePickTime = ConVar.Find("mp_force_pick_time");
+            if (_forcePickTime != null)
+            {
+                _originalForcePickTime = _forcePickTime.GetPrimitiveValue<float>();
+                EnsureAutoPickDisabled();
+            }
+            else
+            {
+                Logger.LogWarning("mp_force_pick_time was unavailable; automatic team assignment cannot be controlled.");
+            }
+        }
     }
 
     public override void Unload(bool hotReload)
@@ -68,13 +87,39 @@ public sealed class BlockTeamChangePlugin : BasePlugin, IPluginConfig<BlockTeamC
         if (_joinGraceTime != null && _originalJoinGraceTime.HasValue &&
             _joinGraceTime.GetPrimitiveValue<float>() == 0.0f)
             _joinGraceTime.SetValue(_originalJoinGraceTime.Value);
+
+        if (_forcePickTime != null && _originalForcePickTime.HasValue &&
+            _forcePickTime.GetPrimitiveValue<float>() == 86400.0f)
+            _forcePickTime.SetValue(_originalForcePickTime.Value);
     }
 
-    private void OnMapStart(string _) => ResetRoundState();
+    private void OnMapStart(string _)
+    {
+        ResetRoundState();
+        EnsureAutoPickDisabled();
+    }
+
+    private void OnClientPutInServer(int slot)
+    {
+        if (!Config.SpectateUnpickedPlayers || !_originalForcePickTime.HasValue)
+            return;
+
+        var player = Utilities.GetPlayers().FirstOrDefault(p => p.Slot == slot);
+        if (!IsHuman(player))
+            return;
+
+        var selectionTime = _originalForcePickTime.Value > 0 ? _originalForcePickTime.Value : 15.0f;
+        AddTimer(selectionTime, () =>
+        {
+            if (IsHuman(player) && player!.TeamNum == 0)
+                player.ChangeTeam(CsTeam.Spectator);
+        });
+    }
 
     private HookResult OnRoundStart(EventRoundStart _, GameEventInfo __)
     {
         EnsureJoinGraceDisabled();
+        EnsureAutoPickDisabled();
         _roundEnded = false;
         _liveRoundStarted = !IsWarmup();
         _freezeTime = _liveRoundStarted;
@@ -136,6 +181,13 @@ public sealed class BlockTeamChangePlugin : BasePlugin, IPluginConfig<BlockTeamC
         if (Config.PreventLateJoinSpawn && _joinGraceTime != null &&
             _joinGraceTime.GetPrimitiveValue<float>() != 0.0f)
             _joinGraceTime.SetValue(0.0f);
+    }
+
+    private void EnsureAutoPickDisabled()
+    {
+        if (Config.SpectateUnpickedPlayers && _forcePickTime != null &&
+            _forcePickTime.GetPrimitiveValue<float>() != 86400.0f)
+            _forcePickTime.SetValue(86400.0f);
     }
 
     private void RestoreRoundState()
